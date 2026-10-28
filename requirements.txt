@@ -1,0 +1,25 @@
+# GUI
+PyQt6>=6.5.0
+
+# MT Metrics (SacreBLEU standard baselines)
+sacrebleu>=2.4.0
+
+# Neural MT Metrics & Frameworks
+torch>=2.0.0
+transformers>=4.36.0
+sentencepiece>=0.2.0
+unbabel-comet>=2.2.0
+bert-score>=0.3.13
+pytorch-lightning>=2.1.0
+
+# Hugging Face Hub & Fast Transfer
+huggingface-hub>=0.20.0
+hf-transfer>=0.1.5
+
+# Edit Distance & Excel/Data Export
+Levenshtein>=0.23.0
+openpyxl>=3.1.2
+
+# Packaging & Compatibility (fixes pkg_resources on Python 3.12+)
+setuptools<82.0.0
+pyinstaller>=6.3.0
