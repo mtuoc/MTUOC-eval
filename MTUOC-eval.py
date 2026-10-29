@@ -6,8 +6,7 @@ Features:
   - Segment Details Table ordered: ID, System, [Metrics...], Hypothesis, Reference, Source, Diff.
   - Visualizations with dedicated sub-tabs:
       * Individual Bar Chart tab for every evaluated metric (with Copy & Save).
-      * Overall Radar Chart comparison tab (normalized multi-metric spider plot).
-      * Individual Radar Chart profile tabs for each evaluated system.
+      * Individual Radar Chart tab for every evaluated metric (comparing all systems on the spokes; requires >= 3 systems).
   - Fixed Matplotlib DejaVu Sans 'semibold' font warning.
   - Safe, absolute path loading of 'config.yaml'.
   - Sequential GPU evaluation (PyTorch) with automatic CPU fallback.
@@ -818,7 +817,8 @@ class SingleMetricPlotPage(QWidget):
             max_y = max(y_vals)
             span = max_y - min_y if max_y != min_y else abs(max_y) * 0.2
             margin = span * 0.2 if span != 0 else 1.0
-            self.ax.set_ylim([max(0, min_y - margin/2), max_y + margin])
+            lower_limit = min_y - margin / 2 if min_y < 0 else max(0, min_y - margin / 2)
+            self.ax.set_ylim([lower_limit, max_y + margin])
 
         self.fig.tight_layout()
         self.canvas.draw()
@@ -837,24 +837,23 @@ class SingleMetricPlotPage(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# Radar / Spider Plot Page
+# Metric Systems Radar Plot Page (1 métrica, comparando >=3 sistemas en los radios)
 # ---------------------------------------------------------------------------
 
-class RadarPlotPage(QWidget):
-    def __init__(self, title: str, metrics: List[str], series_dict: Dict[str, List[float]]):
+class MetricSystemsRadarPage(QWidget):
+    def __init__(self, metric_name: str, systems: List[str], scores: List[float]):
         """
-        title: Title of the radar plot
-        metrics: list of metric names (axes)
-        series_dict: {series_name: [val1, val2, ...]} normalized or formatted
+        Muestra un gráfico de radar para UNA sola métrica donde cada radio (eje polar)
+        representa un sistema MT (se requieren >= 3 sistemas para formar el polígono).
         """
         super().__init__()
-        self.chart_title = title
+        self.metric_name = metric_name
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
 
         bar = QHBoxLayout()
-        title_lbl = QLabel(f"<b>Radar Chart: {title}</b>")
+        title_lbl = QLabel(f"<b>Radar Chart: {metric_name}</b>")
         title_lbl.setStyleSheet("font-size: 13px;")
 
         btn_copy = QPushButton("Copy to Clipboard")
@@ -874,23 +873,28 @@ class RadarPlotPage(QWidget):
         self.canvas = FigureCanvas(self.fig)
         layout.addWidget(self.canvas)
 
-        num_vars = len(metrics)
+        num_vars = len(systems)
         angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
         angles += angles[:1]
+        vals = scores + scores[:1]
 
-        palette = plt.cm.tab10(np.linspace(0, 1, max(len(series_dict), 10)))
-
-        for idx, (s_name, values) in enumerate(series_dict.items()):
-            vals = values + values[:1]
-            color = palette[idx % len(palette)]
-            self.ax.plot(angles, vals, linewidth=2, linestyle='solid', label=s_name, color=color)
-            self.ax.fill(angles, vals, color=color, alpha=0.15)
+        self.ax.plot(angles, vals, color='#1f77b4', linewidth=2, linestyle='solid', marker='o')
+        self.ax.fill(angles, vals, color='#1f77b4', alpha=0.25)
 
         self.ax.set_xticks(angles[:-1])
-        self.ax.set_xticklabels(metrics, fontsize=9, fontweight='bold')
-        self.ax.set_title(title, fontsize=12, fontweight='bold', pad=15)
-        self.ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1), fontsize=9)
+        self.ax.set_xticklabels(systems, fontsize=10, fontweight='bold')
+        self.ax.set_title(f"{metric_name} — Systems Comparison", fontsize=12, fontweight='bold', pad=18)
         self.ax.grid(True, linestyle='--', alpha=0.6)
+
+        # Ajuste de escala radial con margen
+        y_vals = [v for v in scores if isinstance(v, (int, float))]
+        if y_vals:
+            min_y = min(y_vals)
+            max_y = max(y_vals)
+            span = max_y - min_y if max_y != min_y else abs(max_y) * 0.2
+            margin = span * 0.2 if span != 0 else 1.0
+            lower_limit = min_y - margin / 2 if min_y < 0 else max(0, min_y - margin / 2)
+            self.ax.set_ylim([lower_limit, max_y + margin])
 
         self.fig.tight_layout()
         self.canvas.draw()
@@ -898,18 +902,18 @@ class RadarPlotPage(QWidget):
     def copy_to_clipboard(self):
         pixmap = self.canvas.grab()
         QApplication.clipboard().setPixmap(pixmap)
-        QMessageBox.information(self, "Copied", f"'{self.chart_title}' radar chart copied to clipboard!")
+        QMessageBox.information(self, "Copied", f"'{self.metric_name}' radar chart copied to clipboard!")
 
     def save_as_png(self):
-        clean_name = self.chart_title.replace(" ", "_").replace("%", "pct").replace("/", "_")
-        path, _ = QFileDialog.getSaveFileName(self, "Save Radar Chart", f"{clean_name}_radar.png", "PNG Image (*.png);;All Files (*)")
+        clean_name = self.metric_name.replace(" ", "_").replace("%", "pct").replace("/", "_")
+        path, _ = QFileDialog.getSaveFileName(self, f"Save {self.metric_name} Radar", f"{clean_name}_radar.png", "PNG Image (*.png);;All Files (*)")
         if path:
             self.fig.savefig(path, dpi=300, bbox_inches="tight")
             QMessageBox.information(self, "Saved", f"Radar chart saved to:\n{path}")
 
 
 # ---------------------------------------------------------------------------
-# Visualizations Widget (Tabs for Bar Charts & Radar Charts)
+# Visualizations Widget (Tabs for Bar Charts & Single-Metric Radar Charts)
 # ---------------------------------------------------------------------------
 
 class VisualizationWidget(QWidget):
@@ -930,7 +934,7 @@ class VisualizationWidget(QWidget):
         self.metric_tabs.clear()
 
         if len(systems) <= 1:
-            self.lbl_notice.setText("Only 1 system evaluated. Add 2 or more systems to compare metrics.")
+            self.lbl_notice.setText("Only 1 system evaluated. Add 2 or more systems to compare.")
             self.lbl_notice.show()
             self.metric_tabs.hide()
             return
@@ -945,44 +949,19 @@ class VisualizationWidget(QWidget):
         self.lbl_notice.hide()
         self.metric_tabs.show()
 
-        # 1. Bar Chart Tabs: One tab per metric
+        # 1. Gráficos de barras: 1 pestaña por métrica comparando los sistemas (válido para 2 o más sistemas)
         for metric in numeric_metrics:
             scores = [corpus_data[metric].get(s, 0.0) for s in systems]
             page = SingleMetricPlotPage(metric, systems, scores)
             self.metric_tabs.addTab(page, f"Bar: {metric}")
 
-        # 2. Overall Radar Chart (Normalized 0-100% across metrics)
-        # Normalization allows comparing BLEU (0-100) and COMET (0-1) on the same spider web
-        norm_series = {s: [] for s in systems}
-        for metric in numeric_metrics:
-            raw_scores = [corpus_data[metric].get(s, 0.0) for s in systems]
-            min_v = min(raw_scores)
-            max_v = max(raw_scores)
-            diff = max_v - min_v
-            for s in systems:
-                val = corpus_data[metric].get(s, 0.0)
-                if diff > 0:
-                    norm_score = ((val - min_v) / diff) * 100.0
-                else:
-                    norm_score = 100.0
-                norm_series[s].append(round(norm_score, 1))
-
-        radar_all_page = RadarPlotPage(
-            title="All Systems Relative Profile (Normalized 0-100%)",
-            metrics=numeric_metrics,
-            series_dict=norm_series
-        )
-        self.metric_tabs.addTab(radar_all_page, "Radar: All Systems")
-
-        # 3. Individual Radar Chart per system (showing raw metric scores)
-        for s in systems:
-            sys_raw = [corpus_data[m].get(s, 0.0) for m in numeric_metrics]
-            radar_sys_page = RadarPlotPage(
-                title=f"{s} Metric Footprint",
-                metrics=numeric_metrics,
-                series_dict={s: sys_raw}
-            )
-            self.metric_tabs.addTab(radar_sys_page, f"Radar: {s}")
+        # 2. Gráficos de radar: 1 pestaña por métrica comparando los sistemas en los radios
+        # Un radar requiere como mínimo 3 sistemas (radios/vértices) para formar un polígono
+        if len(systems) >= 3:
+            for metric in numeric_metrics:
+                scores = [corpus_data[metric].get(s, 0.0) for s in systems]
+                radar_page = MetricSystemsRadarPage(metric, systems, scores)
+                self.metric_tabs.addTab(radar_page, f"Radar: {metric}")
 
 
 # ---------------------------------------------------------------------------
@@ -1228,7 +1207,7 @@ class MTUOCEvalApp(QMainWindow):
         self.tabs.addTab(tab_details, "Segment Details")
 
         # -------------------------------------------------------------------
-        # TAB 4: Visualizations (Individual Sub-Tabs per Metric and Radar)
+        # TAB 4: Visualizations (Individual Sub-Tabs per Metric: Bar & Radar)
         # -------------------------------------------------------------------
         self.vis_widget = VisualizationWidget()
         self.tabs.addTab(self.vis_widget, "Visualizations")
@@ -1446,7 +1425,7 @@ class MTUOCEvalApp(QMainWindow):
 
             self.table_segments.resizeColumnsToContents()
 
-        # 3. Update Visualizations (Tabs for Bar charts + Tabs for Radar charts)
+        # 3. Update Visualizations (Tabs for Bar charts + Tabs for Single-Metric Radar charts)
         self.vis_widget.update_plots(corpus, systems)
 
         # 4. Signatures Tab
