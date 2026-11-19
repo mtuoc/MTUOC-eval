@@ -10,7 +10,8 @@ Features:
   - Fixed Matplotlib DejaVu Sans 'semibold' font warning.
   - Safe, absolute path loading of 'config.yaml'.
   - Sequential GPU evaluation (PyTorch) with automatic CPU fallback.
-  - Full export support: LaTeX (booktabs), Excel (.xlsx), CSV.
+  - Full export support: LaTeX (booktabs), Excel (.xlsx), CSV with selectable table orientation
+    (Metrics as rows / Systems as columns vs. Systems as rows / Metrics as columns).
 """
 
 import sys
@@ -26,6 +27,7 @@ from typing import List, Dict, Any, Optional
 # Suppress deprecation and font warnings cleanly
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*findfont:.*")
+warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
 
 # ===========================================================================
 # Compatibility Shim for legacy packages (Python 3.12+ / setuptools)
@@ -61,7 +63,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QCheckBox,
     QProgressBar, QTableWidget, QTableWidgetItem, QFileDialog, QMessageBox,
-    QHeaderView, QTabWidget, QScrollArea, QFrame, QDialog, QPlainTextEdit
+    QHeaderView, QTabWidget, QScrollArea, QFrame, QDialog, QPlainTextEdit,
+    QComboBox
 )
 
 # Matplotlib integration for PyQt6
@@ -837,14 +840,14 @@ class SingleMetricPlotPage(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# Metric Systems Radar Plot Page (1 métrica, comparando >=3 sistemas en los radios)
+# Metric Systems Radar Plot Page (1 metric, comparing >=3 systems on spokes)
 # ---------------------------------------------------------------------------
 
 class MetricSystemsRadarPage(QWidget):
     def __init__(self, metric_name: str, systems: List[str], scores: List[float]):
         """
-        Muestra un gráfico de radar para UNA sola métrica donde cada radio (eje polar)
-        representa un sistema MT (se requieren >= 3 sistemas para formar el polígono).
+        Displays a radar chart for a SINGLE metric where each spoke (polar axis)
+        represents one MT system (requires >= 3 systems to form a polygon).
         """
         super().__init__()
         self.metric_name = metric_name
@@ -886,7 +889,6 @@ class MetricSystemsRadarPage(QWidget):
         self.ax.set_title(f"{metric_name} — Systems Comparison", fontsize=12, fontweight='bold', pad=18)
         self.ax.grid(True, linestyle='--', alpha=0.6)
 
-        # Ajuste de escala radial con margen
         y_vals = [v for v in scores if isinstance(v, (int, float))]
         if y_vals:
             min_y = min(y_vals)
@@ -949,14 +951,11 @@ class VisualizationWidget(QWidget):
         self.lbl_notice.hide()
         self.metric_tabs.show()
 
-        # 1. Gráficos de barras: 1 pestaña por métrica comparando los sistemas (válido para 2 o más sistemas)
         for metric in numeric_metrics:
             scores = [corpus_data[metric].get(s, 0.0) for s in systems]
             page = SingleMetricPlotPage(metric, systems, scores)
             self.metric_tabs.addTab(page, f"Bar: {metric}")
 
-        # 2. Gráficos de radar: 1 pestaña por métrica comparando los sistemas en los radios
-        # Un radar requiere como mínimo 3 sistemas (radios/vértices) para formar un polígono
         if len(systems) >= 3:
             for metric in numeric_metrics:
                 scores = [corpus_data[metric].get(s, 0.0) for s in systems]
@@ -1094,7 +1093,6 @@ class MTUOCEvalApp(QMainWindow):
         box_ref_metrics = QGroupBox("Metrics & Models")
         grid_ref_metrics = QGridLayout(box_ref_metrics)
 
-        # Standard metrics checked by default
         self.cb_bleu = QCheckBox("BLEU (SacreBLEU)")
         self.cb_bleu.setChecked(True)
         self.cb_chrf = QCheckBox("chrF++ (Character & Word n-grams)")
@@ -1104,7 +1102,6 @@ class MTUOCEvalApp(QMainWindow):
         self.cb_ed = QCheckBox("Edit Distance (%EdDist & WER)")
         self.cb_ed.setChecked(True)
 
-        # Neural metrics UNCHECKED by default
         self.cb_comet = QCheckBox("COMET:")
         self.cb_comet.setChecked(False)
         self.txt_comet_model = QLineEdit(models_cfg.get("comet_default", ""))
@@ -1174,7 +1171,6 @@ class MTUOCEvalApp(QMainWindow):
         box_qe_metrics = QGroupBox("Quality Estimation Metrics")
         grid_qe_metrics = QGridLayout(box_qe_metrics)
 
-        # COMET-QE checked by default; SBERT unchecked by default
         self.cb_comet_qe = QCheckBox("COMET-QE:")
         self.cb_comet_qe.setChecked(True)
         self.txt_comet_qe_model = QLineEdit(models_cfg.get("comet_qe_default", ""))
@@ -1235,7 +1231,7 @@ class MTUOCEvalApp(QMainWindow):
         self.tabs.addTab(tab_sig, "Signatures")
 
         # -------------------------------------------------------------------
-        # Bottom Global Area
+        # Bottom Global Area (With Export Orientation Selector)
         # -------------------------------------------------------------------
         self.status_lbl = QLabel("Ready.")
         main_layout.addWidget(self.status_lbl)
@@ -1245,6 +1241,21 @@ class MTUOCEvalApp(QMainWindow):
         main_layout.addWidget(self.progress_bar)
 
         h_exports = QHBoxLayout()
+
+        lbl_orient = QLabel("<b>Export Layout:</b>")
+        h_exports.addWidget(lbl_orient)
+
+        self.combo_export_orientation = QComboBox()
+        self.combo_export_orientation.addItem("Rows: Metrics | Cols: Systems (Default)", "metrics_rows")
+        self.combo_export_orientation.addItem("Rows: Systems | Cols: Metrics (Transposed)", "systems_rows")
+        self.combo_export_orientation.setToolTip(
+            "Choose whether exported Corpus Summary tables (LaTeX, Excel, CSV) have Metrics as rows or Systems as rows."
+        )
+        self.combo_export_orientation.currentIndexChanged.connect(self.on_orientation_changed)
+        h_exports.addWidget(self.combo_export_orientation)
+
+        h_exports.addSpacing(12)
+
         self.btn_export_latex = QPushButton("Export to LaTeX...")
         self.btn_export_latex.setEnabled(False)
         self.btn_export_latex.clicked.connect(self.export_latex)
@@ -1259,6 +1270,7 @@ class MTUOCEvalApp(QMainWindow):
         self.btn_export_csv.setEnabled(False)
         self.btn_export_csv.clicked.connect(self.export_csv)
         h_exports.addWidget(self.btn_export_csv)
+
         main_layout.addLayout(h_exports)
 
         self.table_corpus = QTableWidget()
@@ -1285,6 +1297,56 @@ class MTUOCEvalApp(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, title, "", "All Files (*)")
         if path:
             target_line.setText(path)
+
+    def get_summary_table_matrix(self):
+        """
+        Returns (headers, rows_matrix) for the corpus summary table according to
+        the selected export orientation in self.combo_export_orientation.
+        """
+        corpus = self.results_data["corpus"]
+        systems = self.results_data["systems"]
+        metrics = list(corpus.keys())
+        orientation = self.combo_export_orientation.currentData()
+
+        if orientation == "systems_rows":
+            # Rows = Systems, Columns = Metrics
+            headers = ["System"] + metrics
+            rows = []
+            for s in systems:
+                row = [s] + [corpus[m].get(s, "") for m in metrics]
+                rows.append(row)
+        else:
+            # Default: Rows = Metrics, Columns = Systems
+            headers = ["Metric"] + systems
+            rows = []
+            for m in metrics:
+                row = [m] + [corpus[m].get(s, "") for s in systems]
+                rows.append(row)
+
+        return headers, rows
+
+    def refresh_corpus_table_ui(self):
+        """Updates the bottom QTableWidget preview whenever evaluation finishes or orientation toggles."""
+        if not self.results_data or not self.results_data.get("corpus"):
+            return
+
+        headers, rows = self.get_summary_table_matrix()
+        self.table_corpus.clear()
+        self.table_corpus.setColumnCount(len(headers))
+        self.table_corpus.setHorizontalHeaderLabels(headers)
+        self.table_corpus.setRowCount(len(rows))
+
+        for r_idx, row_vals in enumerate(rows):
+            for c_idx, val in enumerate(row_vals):
+                item = QTableWidgetItem(str(val))
+                if c_idx > 0:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table_corpus.setItem(r_idx, c_idx, item)
+
+        self.table_corpus.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+    def on_orientation_changed(self):
+        self.refresh_corpus_table_ui()
 
     def start_evaluation(self, mode: str):
         if mode == "reference":
@@ -1370,22 +1432,9 @@ class MTUOCEvalApp(QMainWindow):
 
         corpus = results["corpus"]
         systems = results["systems"]
-        metrics = list(corpus.keys())
 
-        # 1. Corpus Summary Table
-        self.table_corpus.setColumnCount(len(systems) + 1)
-        self.table_corpus.setHorizontalHeaderLabels(["Metric"] + systems)
-        self.table_corpus.setRowCount(len(metrics))
-
-        for r_idx, m_name in enumerate(metrics):
-            self.table_corpus.setItem(r_idx, 0, QTableWidgetItem(m_name))
-            for c_idx, s_name in enumerate(systems):
-                score = corpus[m_name].get(s_name, "")
-                item = QTableWidgetItem(str(score))
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table_corpus.setItem(r_idx, c_idx + 1, item)
-
-        self.table_corpus.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # 1. Corpus Summary Table (respecting selected orientation)
+        self.refresh_corpus_table_ui()
 
         # 2. Detailed Segment Table: ID, SYSTEM, [METRICS], HYPOTHESIS, REFERENCE, ORIGINAL, DIFF
         segments = results["segments"]
@@ -1425,7 +1474,7 @@ class MTUOCEvalApp(QMainWindow):
 
             self.table_segments.resizeColumnsToContents()
 
-        # 3. Update Visualizations (Tabs for Bar charts + Tabs for Single-Metric Radar charts)
+        # 3. Update Visualizations
         self.vis_widget.update_plots(corpus, systems)
 
         # 4. Signatures Tab
@@ -1449,18 +1498,32 @@ class MTUOCEvalApp(QMainWindow):
             QMessageBox.information(self, "Copied", "Signatures copied to clipboard!")
 
     # -----------------------------------------------------------------------
-    # Export Options: LaTeX, Excel & CSV
+    # Export Options: LaTeX, Excel & CSV (Supporting Both Orientations)
     # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _escape_latex(text: Any) -> str:
+        s = str(text)
+        s = s.replace("\\", "\\textbackslash{}")
+        s = s.replace("&", "\\&")
+        s = s.replace("%", "\\%")
+        s = s.replace("$", "\\$")
+        s = s.replace("#", "\\#")
+        s = s.replace("_", "\\_")
+        s = s.replace("{", "\\{")
+        s = s.replace("}", "\\}")
+        return s
 
     def export_latex(self):
         if not self.results_data or not self.results_data.get("corpus"):
             return
 
-        corpus = self.results_data["corpus"]
-        systems = self.results_data["systems"]
-        metrics = list(corpus.keys())
+        headers, rows = self.get_summary_table_matrix()
+        num_data_cols = len(headers) - 1
+        col_def = "l" + "c" * num_data_cols
 
-        col_def = "l" + "c" * len(systems)
+        header_line = " & ".join(f"\\textbf{{{self._escape_latex(h)}}}" for h in headers) + " \\\\"
+
         latex_lines = [
             "% Add \\usepackage{booktabs} to your LaTeX preamble",
             "\\begin{table}[htbp]",
@@ -1469,17 +1532,13 @@ class MTUOCEvalApp(QMainWindow):
             "\\label{tab:mt_evaluation_results}",
             f"\\begin{{tabular}}{{{col_def}}}",
             "\\toprule",
-            "\\textbf{Metric} & " + " & ".join(f"\\textbf{{{s}}}" for s in systems) + " \\\\",
+            header_line,
             "\\midrule"
         ]
 
-        for m in metrics:
-            row_vals = []
-            for s in systems:
-                val = corpus[m].get(s, "")
-                row_vals.append(str(val))
-            escaped_metric = m.replace("%", "\\%")
-            latex_lines.append(f"{escaped_metric} & " + " & ".join(row_vals) + " \\\\")
+        for row in rows:
+            escaped_cells = [self._escape_latex(row[0])] + [str(val) for val in row[1:]]
+            latex_lines.append(" & ".join(escaped_cells) + " \\\\")
 
         latex_lines.extend([
             "\\bottomrule",
@@ -1511,10 +1570,7 @@ class MTUOCEvalApp(QMainWindow):
             ws_summary.title = "Corpus Summary"
             ws_summary.views.sheetView[0].showGridLines = True
 
-            systems = self.results_data["systems"]
-            corpus = self.results_data["corpus"]
-
-            summary_headers = ["Metric"] + systems
+            summary_headers, summary_rows = self.get_summary_table_matrix()
             ws_summary.append(summary_headers)
 
             for col_idx in range(1, len(summary_headers) + 1):
@@ -1523,8 +1579,7 @@ class MTUOCEvalApp(QMainWindow):
                 cell.font = header_font
                 cell.alignment = Alignment(horizontal="center" if col_idx > 1 else "left")
 
-            for metric_name, sys_scores in corpus.items():
-                row = [metric_name] + [sys_scores.get(s, "") for s in systems]
+            for row in summary_rows:
                 ws_summary.append(row)
 
             ws_det = wb.create_sheet(title="Segment Details")
@@ -1535,7 +1590,6 @@ class MTUOCEvalApp(QMainWindow):
             has_source = self.results_data["has_source"]
             has_ref = self.results_data["has_ref"]
 
-            # Order: ID, System, [Metrics], Hypothesis, Reference, Original, Diff
             det_headers = ["ID", "System"] + sample_metrics + ["Hypothesis"]
             if has_ref:
                 det_headers.append("Reference")
@@ -1574,30 +1628,40 @@ class MTUOCEvalApp(QMainWindow):
         if not self.results_data or not self.results_data.get("segments"):
             return
 
-        path, _ = QFileDialog.getSaveFileName(self, "Export Segments to CSV", "mt_evaluation_segments.csv", "All Files (*)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Results to CSV", "mt_evaluation_results.csv", "All Files (*)")
         if not path:
             return
         if not path.endswith(".csv"):
             path += ".csv"
 
         try:
+            # 1. Export Corpus Summary in the chosen orientation
+            summary_headers, summary_rows = self.get_summary_table_matrix()
+
+            # 2. Export Segment Details
             segments = self.results_data["segments"]
             sample_metrics = list(segments[0]["metrics"].keys())
             has_source = self.results_data["has_source"]
             has_ref = self.results_data["has_ref"]
 
-            # Order: ID, System, [Metrics], Hypothesis, Reference, Original, Diff
-            headers = ["ID", "System"] + sample_metrics + ["Hypothesis"]
+            seg_headers = ["ID", "System"] + sample_metrics + ["Hypothesis"]
             if has_ref:
-                headers.append("Reference")
+                seg_headers.append("Reference")
             if has_source:
-                headers.append("Original")
+                seg_headers.append("Original")
             if has_ref:
-                headers.append("DIFF")
+                seg_headers.append("DIFF")
 
             with open(path, "w", encoding="utf-8-sig", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(headers)
+                writer.writerow(["# CORPUS SUMMARY"])
+                writer.writerow(summary_headers)
+                for s_row in summary_rows:
+                    writer.writerow(s_row)
+
+                writer.writerow([])
+                writer.writerow(["# SEGMENT DETAILS"])
+                writer.writerow(seg_headers)
 
                 for rec in segments:
                     row = [rec["seg_id"], rec["system"]]
