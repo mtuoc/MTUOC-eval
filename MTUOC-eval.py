@@ -16,6 +16,17 @@ Features:
 
 import sys
 import os
+
+# Fix DLL search paths for PyInstaller on Windows (Python 3.8+)
+if sys.platform == "win32" and getattr(sys, "frozen", False):
+    base_dir = sys._MEIPASS
+    os.environ["PATH"] = base_dir + os.pathsep + os.environ.get("PATH", "")
+    if hasattr(os, "add_dll_directory"):
+        os.add_dll_directory(base_dir)
+        sp_dir = os.path.join(base_dir, "sentencepiece")
+        if os.path.isdir(sp_dir):
+            os.add_dll_directory(sp_dir)
+            
 import gc
 import csv
 import difflib
@@ -28,6 +39,46 @@ from typing import List, Dict, Any, Optional
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*findfont:.*")
 warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
+
+# ===========================================================================
+# Fallback Mock for sentencepiece DLL failure in frozen Windows builds
+# ===========================================================================
+try:
+    import sentencepiece
+except Exception:
+    import types
+    import importlib.abc
+    import importlib.machinery
+
+    class _DummySPProcessor:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "SentencePiece C++ binary is unavailable in this frozen Windows build. "
+                "Use Fast/Rust tokenizers (XLM-R, BERT, LaBSE)."
+            )
+
+    class _DummySPLoader(importlib.abc.Loader):
+        def create_module(self, spec):
+            mod = types.ModuleType(spec.name)
+            mod.__version__ = "0.2.0"
+            mod.__path__ = []
+            mod.__spec__ = spec
+            mod.SentencePieceProcessor = _DummySPProcessor
+            return mod
+
+        def exec_module(self, module):
+            pass
+
+    _sp_spec = importlib.machinery.ModuleSpec(
+        name="sentencepiece",
+        loader=_DummySPLoader(),
+        is_package=True
+    )
+    _sp_mock = _DummySPLoader().create_module(_sp_spec)
+    sys.modules["sentencepiece"] = _sp_mock
+    sys.modules["sentencepiece._sentencepiece"] = _sp_mock
+# ===========================================================================
+# ===========================================================================
 
 # ===========================================================================
 # Compatibility Shim for legacy packages (Python 3.12+ / setuptools)
@@ -54,6 +105,18 @@ except ModuleNotFoundError:
     pkg_resources.VersionConflict = Exception
     sys.modules["pkg_resources"] = pkg_resources
 # ===========================================================================
+
+# Ensure pytorch_lightning exposes __version__ in frozen builds
+try:
+    import pytorch_lightning as _pl
+    if not hasattr(_pl, "__version__"):
+        import importlib.metadata
+        try:
+            _pl.__version__ = importlib.metadata.version("pytorch-lightning")
+        except Exception:
+            _pl.__version__ = "2.2.0"
+except Exception:
+    pass
 
 import yaml
 import torch
